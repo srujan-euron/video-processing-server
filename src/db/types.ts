@@ -49,7 +49,7 @@ export type AffiliatePaymentDetails = {
     updatedAt: Timestamp;
 };
 export type AffiliateTransaction = {
-    id: string;
+    id: Generated<string>;
     affiliateId: string;
     amount: number;
     type: TransactionType;
@@ -60,7 +60,7 @@ export type AffiliateTransaction = {
     updatedAt: Timestamp;
 };
 export type AffiliateUser = {
-    id: string;
+    id: Generated<string>;
     userId: string;
     affiliateCode: string;
     commissionRate: number;
@@ -70,7 +70,7 @@ export type AffiliateUser = {
     updatedAt: Timestamp;
 };
 export type AffiliateWithdrawal = {
-    id: string;
+    id: Generated<string>;
     affiliateId: string;
     amount: number;
     status: WithdrawalStatus;
