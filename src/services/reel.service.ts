@@ -65,7 +65,7 @@ class ReelService {
     try {
       const processingPromise = this.transcodeAndUploadVideo(fileBuffer, outputDir, videoId);
       const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error("Video processing timed out")), 5 * 60 * 1000); // 5 minutes timeout
+        setTimeout(() => reject(new Error("Video processing timed out")), 20 * 60 * 1000); // 20 minutes timeout
       });
 
       await Promise.race([processingPromise, timeoutPromise]);
@@ -224,8 +224,8 @@ class ReelService {
     if (processingInfo) {
       if (processingInfo.status === ReelProcessingStatus.PROCESSING) {
         const elapsedTime = (Date.now() - processingInfo.startTime) / 1000 / 60; // in minutes
-        if (elapsedTime > 5) { // 5 minutes timeout
-          // If processing time exceeds 5 minutes, consider it as an error
+        if (elapsedTime > 20) { // 20 minutes timeout
+          // If processing time exceeds 20 minutes, consider it as an error
           await this.deletePartiallyUploadedFiles(videoId);
           await this.updateVideoProcessingStatus(videoId, ReelProcessingStatus.FAILED);
           this.processingVideos.set(videoId, { ...processingInfo, status: ReelProcessingStatus.FAILED, error: "Processing timed out" });
