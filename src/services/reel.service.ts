@@ -1,17 +1,18 @@
-import { BadRequestError } from "../errors/bad-request.error";
 import { ReelRepository } from "../repositories/reel.repository";
 import { S3Client, PutObjectCommand, DeleteObjectsCommand } from "@aws-sdk/client-s3";
 import fs from "fs/promises";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import ffmpeg from "fluent-ffmpeg";
+import { Job } from "bullmq";
 import ffmpegStatic from "ffmpeg-static";
 import stream from "stream";
-import { CreateReel, UpdateReelStatus } from "../types/reel.type";
 import config from "../config";
 import { ListObjectsCommand } from "@aws-sdk/client-s3";
 import logger from "../utils/logger";
 import { ReelProcessingStatus } from "../db/enums";
+import { videoProcessingQueue } from "../utils/queues/videoProcessing";
+
 
 class ReelService {
   private s3Client: S3Client;
@@ -46,29 +47,26 @@ class ReelService {
 
     this.processingVideos.set(videoId, { status: ReelProcessingStatus.PROCESSING, startTime: Date.now() });
 
-    this.processVideoInBackground(fileBuffer, videoId).catch(error => {
-      logger.error(`Error in background video processing for videoId ${videoId}:`, error);
-      this.processingVideos.set(videoId, {
-        status: ReelProcessingStatus.FAILED,
-        error: error instanceof Error ? error.message : String(error),
-        startTime: Date.now()
-      });
-      this.updateVideoProcessingStatus(videoId, ReelProcessingStatus.FAILED);
+    await videoProcessingQueue.add("processVideo", { fileBuffer: Array.from(fileBuffer), videoId }, {
+      jobId: videoId,
+      attempts: 3,
+      backoff: {
+        type: "exponential",
+        delay: 1000,
+      },
+      removeOnComplete: true,
+      removeOnFail: false,
     });
 
     return videoId;
   }
 
-  private async processVideoInBackground(fileBuffer: Buffer, videoId: string): Promise<void> {
+  async processVideoInBackground(fileBufferArray: number[], videoId: string): Promise<void> {
+    const fileBuffer = Buffer.from(fileBufferArray);
     const outputDir = path.join(__dirname, "..", "temp", videoId);
 
     try {
-      const processingPromise = this.transcodeAndUploadVideo(fileBuffer, outputDir, videoId);
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error("Video processing timed out")), 20 * 60 * 1000); // 20 minutes timeout
-      });
-
-      await Promise.race([processingPromise, timeoutPromise]);
+      await this.transcodeAndUploadVideo(fileBuffer, outputDir, videoId);
 
       await this.updateVideoProcessingStatus(videoId, ReelProcessingStatus.PROCESSED);
       this.processingVideos.set(videoId, { status: ReelProcessingStatus.PROCESSED, startTime: this.processingVideos.get(videoId)!.startTime });
@@ -78,7 +76,6 @@ class ReelService {
       await this.updateVideoProcessingStatus(videoId, ReelProcessingStatus.FAILED);
       this.processingVideos.set(videoId, { status: ReelProcessingStatus.FAILED, error: errorMessage, startTime: this.processingVideos.get(videoId)!.startTime });
 
-      // Delete any partially uploaded files
       await this.deletePartiallyUploadedFiles(videoId);
 
       throw new Error(`Video processing failed: ${errorMessage}`);
@@ -105,8 +102,9 @@ class ReelService {
       { name: "360p", width: 640, height: 360 },
     ];
 
+    const masterPlaylist = "#EXTM3U\n#EXT-X-VERSION:3\n";
     const transcodingProcesses = resolutions.map(({ name, width, height }) => {
-      return new Promise<void>((resolve, reject) => {
+      return new Promise<string>((resolve, reject) => {
         const inputStream = stream.Readable.from(fileBuffer);
 
         logger.info(`Starting transcoding for ${name} resolution`);
@@ -115,31 +113,40 @@ class ReelService {
           .videoCodec("libx264")
           .audioCodec("aac")
           .size(`${width}x${height}`)
-          .format("hls")
           .outputOptions([
             "-hls_time 6",
             "-hls_playlist_type vod",
             "-hls_flags independent_segments",
             "-hls_segment_type mpegts",
-            `-hls_segment_filename ${outputDir}/${name}_stream_%03d.ts`,
+            `-hls_segment_filename ${outputDir}/${name}_%03d.ts`,
           ])
-          .output(`${outputDir}/${name}_stream.m3u8`)
+          .output(`${outputDir}/${name}.m3u8`)
           .on("end", () => {
             logger.info(`Transcoding completed for ${name} resolution`);
-            resolve();
+            resolve(`#EXT-X-STREAM-INF:BANDWIDTH=${width * height * 2.5},RESOLUTION=${width}x${height}\n${name}.m3u8\n`);
           })
           .on("error", (err) => {
             logger.error(`Transcoding ${name} failed: ${err.message}`);
             reject(new Error(`Transcoding ${name} failed: ${err.message}`));
           })
           .on("progress", (progress) => {
-            logger.info(`Transcoding progress for ${name}: ${progress.percent}% done`);
+            if (progress && progress.percent) {
+              logger.info(`Transcoding progress for ${name}: ${progress.percent.toFixed(2)}% done`);
+            }
           })
           .run();
       });
     });
 
-    await Promise.all(transcodingProcesses);
+    try {
+      const playlistEntries = await Promise.all(transcodingProcesses);
+      const masterPlaylistContent = masterPlaylist + playlistEntries.join("");
+      await fs.writeFile(path.join(outputDir, "master.m3u8"), masterPlaylistContent);
+      logger.info("Master playlist created successfully");
+    } catch (error) {
+      logger.error("Error creating master playlist:", error);
+      throw error;
+    }
   }
 
   private async uploadToR2(outputDir: string, videoId: string): Promise<void> {
@@ -274,7 +281,6 @@ class ReelService {
     return { statusCode: 200, processed: true, message: "Video processing is complete." };
   }
 
-  // Alias for backwards compatibility
   checkIfVideoIsProcessed = this.checkVideoProcessingStatus;
 
   private async updateVideoProcessingStatus(videoId: string, status: ReelProcessingStatus) {
@@ -282,7 +288,6 @@ class ReelService {
     return this._ReelRepository.updateVideoProcessingStatus(videoId, status);
   }
 
-  // Method for debugging
   async getProcessingLogs(): Promise<{ [videoId: string]: { status: ReelProcessingStatus, elapsedTime: string, error?: string } }> {
     const logs: { [videoId: string]: { status: ReelProcessingStatus, elapsedTime: string, error?: string } } = {};
 
@@ -298,25 +303,6 @@ class ReelService {
     return logs;
   }
 
-  async createReel(ReelMeta: CreateReel) {
-
-    const response = await this._ReelRepository.createReel(ReelMeta);
-    if (!response) throw new BadRequestError("Error occured while creating Reel.");
-
-    return response;
-  }
-
-  async updateReelStatus(params: UpdateReelStatus) {
-
-    const { id } = params;
-    const Reel = await this._ReelRepository.getAReel(id);
-    if (!Reel) throw new BadRequestError("Reel not found.");
-
-    const response = await this._ReelRepository.updateReelStatus(params);
-    if (!response) throw new BadRequestError("Error occured while updating Reel status.");
-
-    return response;
-  }
 }
 
 export default new ReelService(new ReelRepository());

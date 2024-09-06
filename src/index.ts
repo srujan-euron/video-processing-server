@@ -5,6 +5,8 @@ import app from "./app";
 import config from "./config";
 import { waitForDBConnection } from "./db/connection";
 import logger from "./utils/logger";
+import { initializeVideoProcessingWorker } from "./utils/queues/videoProcessing";
+
 
 (async () => {
   logger.info("Connecting to Database...");
@@ -42,6 +44,8 @@ import logger from "./utils/logger";
 
       return false;
     };
+    const videoProcessingWorker = initializeVideoProcessingWorker();
+
 
     const port = normalizePort(config.PORT || "4010");
 

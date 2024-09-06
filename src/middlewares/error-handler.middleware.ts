@@ -4,6 +4,7 @@ import { customAlphabet } from "nanoid";
 import { CustomError } from "../errors/custom.error";
 import { ResponseType } from "../types/response.type";
 import logger from "../utils/logger";
+import { Job, Queue, QueueEvents } from "bullmq";
 
 const nanoid = customAlphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", 18);
 
@@ -22,12 +23,13 @@ export const globalHandler = (data: any, req: Request, res: ResponseType, next: 
     });
   }
 
-  if (data instanceof Error) {
+  // Handle BullMQ specific errors
+  if (data instanceof Error && (data.name === "JobNotFoundError" || data.name === "QueueSchedulerError" || data.name === "BackoffError")) {
     const statusCode = 500;
     const errorId = nanoid();
-    const message = data.message;
-    const errMesage = `route: ${req.path}, errorMsg: ${message}, rayId: ${errorId}`;
-    logger.error(errMesage);
+    const message = `Video processing queue error: ${data.message}`;
+    const errMessage = `route: ${req.path}, errorMsg: ${message}, rayId: ${errorId}`;
+    logger.error(errMessage);
     return res.status(statusCode).json({
       errors: [
         {
@@ -35,11 +37,28 @@ export const globalHandler = (data: any, req: Request, res: ResponseType, next: 
         }
       ],
       statusCode,
-      message: errMesage,
+      message: errMessage,
       success: false
     });
   }
 
+  if (data instanceof Error) {
+    const statusCode = 500;
+    const errorId = nanoid();
+    const message = data.message;
+    const errMessage = `route: ${req.path}, errorMsg: ${message}, rayId: ${errorId}`;
+    logger.error(errMessage);
+    return res.status(statusCode).json({
+      errors: [
+        {
+          message
+        }
+      ],
+      statusCode,
+      message: errMessage,
+      success: false
+    });
+  }
 
   if (data) {
     const msg = data.msg;
@@ -64,5 +83,4 @@ export const globalHandler = (data: any, req: Request, res: ResponseType, next: 
       success: false
     });
   }
-
 };

@@ -8,6 +8,7 @@ const config = {
 
   REDIS_HOST: process.env.REDIS_HOST!,
   REDIS_PORT: process.env.REDIS_PORT!,
+  REDIS_URL: process.env.REDIS_URL || "redis://localhost:6379",
 
 
   CLOUDWATCH_LOG_GROUP_NAME: process.env.CLOUDWATCH_LOG_GROUP_NAME!,
