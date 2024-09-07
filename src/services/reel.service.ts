@@ -98,9 +98,6 @@ class ReelService {
       await fs.writeFile(filePath, fileBuffer);
       logger.info(`File written successfully: ${filePath}`);
 
-      // Note: You might need to add a method to create a new Reel entry in your database
-      // await this._ReelRepository.createReel(videoId, ReelProcessingStatus.PROCESSING);
-
       await videoProcessingQueue.add("processVideo", { filePath, videoId }, {
         jobId: videoId,
         attempts: 3,
@@ -115,10 +112,10 @@ class ReelService {
       return videoId;
     } catch (error) {
       logger.error(`Error in processVideo for videoId ${videoId}:`, error);
+      await this.cleanupTempFiles(filePath, videoId);
       throw error;
     }
   }
-
 
   async processVideoInBackground(filePath: string, videoId: string): Promise<void> {
     logger.info(`Starting background processing for videoId: ${videoId}`);
@@ -153,12 +150,7 @@ class ReelService {
           logger.warn(`Failed to release lock for ${filePath}:`, releaseError);
         }
       }
-      try {
-        await fs.unlink(filePath);
-        logger.info(`Temporary file deleted: ${filePath}`);
-      } catch (unlinkError) {
-        logger.warn(`Failed to delete file ${filePath}:`, unlinkError);
-      }
+      await this.cleanupTempFiles(filePath, videoId);
     }
   }
 
@@ -166,11 +158,19 @@ class ReelService {
     const outputDir = path.join(this.uploadDir, videoId);
     await fs.ensureDir(outputDir);
 
-    logger.info(`Starting video transcoding for videoId: ${videoId}`);
-    await this.transcodeVideo(filePath, outputDir);
+    try {
+      logger.info(`Starting video transcoding for videoId: ${videoId}`);
+      await this.transcodeVideo(filePath, outputDir);
 
-    logger.info(`Starting R2 upload for videoId: ${videoId}`);
-    await this.uploadToR2(outputDir, videoId);
+      logger.info(`Starting R2 upload for videoId: ${videoId}`);
+      await this.uploadToR2(outputDir, videoId);
+    } catch (error) {
+      logger.error(`Error in transcodeAndUploadVideo for videoId ${videoId}:`, error);
+      throw error;
+    } finally {
+      // Clean up the output directory
+      await this.cleanupTempFiles(filePath, videoId);
+    }
   }
 
   private async transcodeVideo(filePath: string, outputDir: string): Promise<void> {
@@ -275,11 +275,18 @@ class ReelService {
     }
   }
 
-  private async cleanupTempFiles(outputDir: string, videoId: string): Promise<void> {
+  private async cleanupTempFiles(filePath: string, videoId: string): Promise<void> {
     logger.info(`Starting cleanup process for videoId: ${videoId}`);
+    const outputDir = path.join(this.uploadDir, videoId);
+
     try {
+      // Delete the input file
+      await fs.unlink(filePath);
+      logger.info(`Deleted input file: ${filePath}`);
+
+      // Delete the output directory
       await fs.rm(outputDir, { recursive: true, force: true });
-      logger.info(`Successfully cleaned up temporary files for videoId: ${videoId}`);
+      logger.info(`Deleted output directory: ${outputDir}`);
     } catch (error) {
       logger.warn(`Failed to clean up temporary files for videoId: ${videoId}. Error: ${error}`);
     }

@@ -15,7 +15,7 @@ export const checkTranscodeStatus = async (req: Request, res: Response, next: Ne
   try {
     const videoId = req.params.id;
 
-    const { statusCode, processed, message } = await ReelService.checkIfVideoIsProcessed(videoId);
+    const { statusCode, processed, message } = await ReelService.checkVideoProcessingStatus(videoId);
 
     res.status(statusCode).json({
       processed,
