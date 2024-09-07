@@ -12,8 +12,22 @@ import rootRouter from "./routes/index.route";
 import { asyncHandler } from "./utils/asynchandler";
 import logger from "./utils/logger";
 import { getLocalIP } from "./utils/system.util";
+import { createBullBoard } from "@bull-board/api";
+import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
+import { ExpressAdapter } from "@bull-board/express";
+import { videoProcessingQueue } from "./utils/queues/videoProcessing";
 
 const app = express();
+const serverAdapter = new ExpressAdapter();
+serverAdapter.setBasePath("/admin/queues");
+
+const { addQueue, removeQueue, setQueues, replaceQueues } = createBullBoard({
+  queues: [new BullMQAdapter(videoProcessingQueue)], // Add your queue here
+  serverAdapter: serverAdapter,
+});
+
+app.use("/admin/queues", serverAdapter.getRouter());
+
 app.set("trust proxy", true);
 app.set("view engine", "ejs");
 app.set("views", "src/views");

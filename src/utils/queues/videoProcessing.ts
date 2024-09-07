@@ -25,10 +25,10 @@ export const videoProcessingQueue = new Queue("videoProcessing", {
 });
 
 const processJob = async (job: Job) => {
-  const { fileBuffer, videoId } = job.data;
+  const { filePath, videoId } = job.data;
 
   try {
-    await ReelService.processVideoInBackground(fileBuffer, videoId);
+    await ReelService.processVideoInBackground(filePath, videoId);
     return { success: true, videoId };
   } catch (error) {
     logger.error(`Error processing video ${videoId}:`, error);

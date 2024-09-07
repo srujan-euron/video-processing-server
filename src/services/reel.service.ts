@@ -47,7 +47,13 @@ class ReelService {
 
     this.processingVideos.set(videoId, { status: ReelProcessingStatus.PROCESSING, startTime: Date.now() });
 
-    await videoProcessingQueue.add("processVideo", { fileBuffer: Array.from(fileBuffer), videoId }, {
+    // Save the file buffer to a temporary file
+    const tempDir = path.join(__dirname, "..", "temp");
+    await fs.mkdir(tempDir, { recursive: true });
+    const tempFilePath = path.join(tempDir, `${videoId}.mp4`);
+    await fs.writeFile(tempFilePath, fileBuffer);
+
+    await videoProcessingQueue.add("processVideo", { filePath: tempFilePath, videoId }, {
       jobId: videoId,
       attempts: 3,
       backoff: {
@@ -61,12 +67,11 @@ class ReelService {
     return videoId;
   }
 
-  async processVideoInBackground(fileBufferArray: number[], videoId: string): Promise<void> {
-    const fileBuffer = Buffer.from(fileBufferArray);
+  async processVideoInBackground(filePath: string, videoId: string): Promise<void> {
     const outputDir = path.join(__dirname, "..", "temp", videoId);
 
     try {
-      await this.transcodeAndUploadVideo(fileBuffer, outputDir, videoId);
+      await this.transcodeAndUploadVideo(filePath, outputDir, videoId);
 
       await this.updateVideoProcessingStatus(videoId, ReelProcessingStatus.PROCESSED);
       this.processingVideos.set(videoId, { status: ReelProcessingStatus.PROCESSED, startTime: this.processingVideos.get(videoId)!.startTime });
@@ -81,21 +86,22 @@ class ReelService {
       throw new Error(`Video processing failed: ${errorMessage}`);
     } finally {
       await this.cleanupTempFiles(outputDir, videoId);
+      await fs.unlink(filePath).catch(err => logger.error(`Failed to delete temporary file ${filePath}:`, err));
     }
   }
 
-  private async transcodeAndUploadVideo(fileBuffer: Buffer, outputDir: string, videoId: string): Promise<void> {
+  private async transcodeAndUploadVideo(filePath: string, outputDir: string, videoId: string): Promise<void> {
     logger.info(`Creating output directory for videoId: ${videoId}`);
     await fs.mkdir(outputDir, { recursive: true });
 
     logger.info(`Starting video transcoding for videoId: ${videoId}`);
-    await this.transcodeVideo(fileBuffer, outputDir);
+    await this.transcodeVideo(filePath, outputDir);
 
     logger.info(`Starting R2 upload for videoId: ${videoId}`);
     await this.uploadToR2(outputDir, videoId);
   }
 
-  private async transcodeVideo(fileBuffer: Buffer, outputDir: string): Promise<void> {
+  private async transcodeVideo(filePath: string, outputDir: string): Promise<void> {
     const resolutions = [
       { name: "1080p", width: 1920, height: 1080 },
       { name: "720p", width: 1280, height: 720 },
@@ -105,11 +111,9 @@ class ReelService {
     const masterPlaylist = "#EXTM3U\n#EXT-X-VERSION:3\n";
     const transcodingProcesses = resolutions.map(({ name, width, height }) => {
       return new Promise<string>((resolve, reject) => {
-        const inputStream = stream.Readable.from(fileBuffer);
-
         logger.info(`Starting transcoding for ${name} resolution`);
 
-        ffmpeg(inputStream)
+        ffmpeg(filePath)
           .videoCodec("libx264")
           .audioCodec("aac")
           .size(`${width}x${height}`)
