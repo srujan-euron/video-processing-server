@@ -5,6 +5,8 @@ import ReelService from "../../services/reel.service";
 import logger from "../../utils/logger";
 import cluster from "cluster";
 import os from "os";
+import fs from "fs-extra";
+
 
 const connection = new IORedis(config.REDIS_URL, {
   maxRetriesPerRequest: null,
@@ -25,13 +27,13 @@ export const videoProcessingQueue = new Queue("videoProcessing", {
 });
 
 const processJob = async (job: Job) => {
-  const { s3Key, videoId } = job.data;
+  const { filePath, videoId } = job.data;
 
   try {
-    if (!s3Key) {
-      throw new Error(`Invalid S3 key for videoId: ${videoId}`);
+    if (!await fs.pathExists(filePath)) {
+      throw new Error(`File not found: ${filePath}`);
     }
-    await ReelService.processVideoInBackground(s3Key, videoId);
+    await ReelService.processVideoInBackground(filePath, videoId);
     return { success: true, videoId };
   } catch (error) {
     logger.error(`Error processing video ${videoId}:`, error);
