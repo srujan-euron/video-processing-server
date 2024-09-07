@@ -1,21 +1,20 @@
 import { ReelRepository } from "../repositories/reel.repository";
-import { S3Client, PutObjectCommand, DeleteObjectsCommand } from "@aws-sdk/client-s3";
-import fs from "fs/promises";
+import { S3Client, PutObjectCommand, DeleteObjectsCommand, ListObjectsCommand } from "@aws-sdk/client-s3";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import ffmpeg from "fluent-ffmpeg";
-import { Job } from "bullmq";
 import ffmpegStatic from "ffmpeg-static";
 import stream from "stream";
+import fs from "fs-extra";
+import lockfile from "proper-lockfile";
 import config from "../config";
-import { ListObjectsCommand } from "@aws-sdk/client-s3";
 import logger from "../utils/logger";
 import { ReelProcessingStatus } from "../db/enums";
 import { videoProcessingQueue } from "../utils/queues/videoProcessing";
 
-
 class ReelService {
   private s3Client: S3Client;
+  private readonly uploadDir: string;
   private processingVideos: Map<string, {
     status: ReelProcessingStatus,
     error?: string,
@@ -23,6 +22,9 @@ class ReelService {
   }> = new Map();
 
   constructor(private readonly _ReelRepository: ReelRepository) {
+    this.uploadDir = path.join(process.cwd(), "uploads");
+    fs.ensureDirSync(this.uploadDir);
+
     this.s3Client = new S3Client({
       endpoint: config.CLOUDFLARE_R2_ENDPOINT,
       credentials: {
@@ -35,64 +37,134 @@ class ReelService {
       throw new Error("FFmpeg not found. Make sure ffmpeg-static is properly installed.");
     }
 
-
     ffmpeg.setFfmpegPath(ffmpegStatic);
-
   }
 
+  async getVideoMetadata(filePath: any) {
+    return new Promise((resolve, reject) => {
+      // Use fluent-ffmpeg to probe the video file
+      ffmpeg.ffprobe(filePath, (err, metadata) => {
+        if (err) {
+          logger.error(`Error retrieving metadata for file ${filePath}:`, err);
+          return reject(new Error(`Unable to retrieve metadata for file: ${filePath}`));
+        }
+
+        // Extract start time, duration, and other useful properties
+        const format = metadata?.format || {};
+        const startTime = format.start_time || 0; // Default to 0 if start_time is missing
+        const duration = format.duration || 0;
+
+        logger.info(`Video metadata for file ${filePath}:`, metadata);
+
+        // Return the metadata that is useful for your processing
+        resolve({
+          startTime,
+          duration,
+          formatName: format.format_name || "unknown",
+          size: format.size || 0,
+          bitrate: format.bit_rate || 0,
+        });
+      });
+    });
+  }
+
+  private getTempDir(): string {
+    return "/var/www/video-processing-server/dist/temp";
+  }
+
+  private async logFileOperation(operation: string, filePath: string): Promise<void> {
+    try {
+      const stats = await fs.stat(filePath);
+      logger.info(`${operation} - File: ${filePath}, Size: ${stats.size} bytes, Permissions: ${stats.mode.toString(8)}`);
+
+      const dirPath = path.dirname(filePath);
+      const dirStats = await fs.stat(dirPath);
+      logger.info(`${operation} - Directory: ${dirPath}, Permissions: ${dirStats.mode.toString(8)}`);
+
+      const files = await fs.readdir(dirPath);
+      logger.info(`${operation} - Directory contents: ${files.join(", ")}`);
+    } catch (error) {
+      logger.error(`${operation} - Error accessing file or directory: ${filePath}`, error);
+    }
+  }
 
   async processVideo(fileBuffer: Buffer): Promise<string> {
     const videoId = uuidv4();
     logger.info(`Initializing video processing for videoId: ${videoId}`);
 
-    this.processingVideos.set(videoId, { status: ReelProcessingStatus.PROCESSING, startTime: Date.now() });
-
-    // Save the file buffer to a temporary file
-    const tempDir = path.join(__dirname, "..", "temp");
-    await fs.mkdir(tempDir, { recursive: true });
-    const tempFilePath = path.join(tempDir, `${videoId}.mp4`);
-    await fs.writeFile(tempFilePath, fileBuffer);
-
-    await videoProcessingQueue.add("processVideo", { filePath: tempFilePath, videoId }, {
-      jobId: videoId,
-      attempts: 3,
-      backoff: {
-        type: "exponential",
-        delay: 1000,
-      },
-      removeOnComplete: true,
-      removeOnFail: false,
-    });
-
-    return videoId;
-  }
-
-  async processVideoInBackground(filePath: string, videoId: string): Promise<void> {
-    const outputDir = path.join(__dirname, "..", "temp", videoId);
+    const filePath = path.join(this.uploadDir, `${videoId}.mp4`);
 
     try {
-      await this.transcodeAndUploadVideo(filePath, outputDir, videoId);
+      await fs.writeFile(filePath, fileBuffer);
+      logger.info(`File written successfully: ${filePath}`);
 
-      await this.updateVideoProcessingStatus(videoId, ReelProcessingStatus.PROCESSED);
-      this.processingVideos.set(videoId, { status: ReelProcessingStatus.PROCESSED, startTime: this.processingVideos.get(videoId)!.startTime });
+      // Note: You might need to add a method to create a new Reel entry in your database
+      // await this._ReelRepository.createReel(videoId, ReelProcessingStatus.PROCESSING);
+
+      await videoProcessingQueue.add("processVideo", { filePath, videoId }, {
+        jobId: videoId,
+        attempts: 3,
+        backoff: {
+          type: "exponential",
+          delay: 1000,
+        },
+        removeOnComplete: true,
+        removeOnFail: false,
+      });
+
+      return videoId;
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      logger.error(`Error in processVideoInBackground for videoId ${videoId}:`, errorMessage);
-      await this.updateVideoProcessingStatus(videoId, ReelProcessingStatus.FAILED);
-      this.processingVideos.set(videoId, { status: ReelProcessingStatus.FAILED, error: errorMessage, startTime: this.processingVideos.get(videoId)!.startTime });
-
-      await this.deletePartiallyUploadedFiles(videoId);
-
-      throw new Error(`Video processing failed: ${errorMessage}`);
-    } finally {
-      await this.cleanupTempFiles(outputDir, videoId);
-      await fs.unlink(filePath).catch(err => logger.error(`Failed to delete temporary file ${filePath}:`, err));
+      logger.error(`Error in processVideo for videoId ${videoId}:`, error);
+      throw error;
     }
   }
 
-  private async transcodeAndUploadVideo(filePath: string, outputDir: string, videoId: string): Promise<void> {
-    logger.info(`Creating output directory for videoId: ${videoId}`);
-    await fs.mkdir(outputDir, { recursive: true });
+
+  async processVideoInBackground(filePath: string, videoId: string): Promise<void> {
+    logger.info(`Starting background processing for videoId: ${videoId}`);
+
+    let release;
+    try {
+      release = await lockfile.lock(filePath, {
+        retries: {
+          retries: 5,
+          factor: 3,
+          minTimeout: 1 * 1000,
+          maxTimeout: 60 * 1000,
+          randomize: true,
+        }
+      });
+
+      if (!await fs.pathExists(filePath)) {
+        throw new Error(`File not found: ${filePath}`);
+      }
+
+      await this.transcodeAndUploadVideo(filePath, videoId);
+      await this._ReelRepository.updateVideoProcessingStatus(videoId, ReelProcessingStatus.PROCESSED);
+    } catch (error) {
+      logger.error(`Error in processVideoInBackground for videoId ${videoId}:`, error);
+      await this._ReelRepository.updateVideoProcessingStatus(videoId, ReelProcessingStatus.FAILED);
+      throw error;
+    } finally {
+      if (release) {
+        try {
+          await release();
+        } catch (releaseError) {
+          logger.warn(`Failed to release lock for ${filePath}:`, releaseError);
+        }
+      }
+      try {
+        await fs.unlink(filePath);
+        logger.info(`Temporary file deleted: ${filePath}`);
+      } catch (unlinkError) {
+        logger.warn(`Failed to delete file ${filePath}:`, unlinkError);
+      }
+    }
+  }
+
+  private async transcodeAndUploadVideo(filePath: string, videoId: string): Promise<void> {
+    const outputDir = path.join(this.uploadDir, videoId);
+    await fs.ensureDir(outputDir);
 
     logger.info(`Starting video transcoding for videoId: ${videoId}`);
     await this.transcodeVideo(filePath, outputDir);
@@ -205,60 +277,16 @@ class ReelService {
 
   private async cleanupTempFiles(outputDir: string, videoId: string): Promise<void> {
     logger.info(`Starting cleanup process for videoId: ${videoId}`);
-    const maxRetries = 3;
-    let retries = 0;
-
-    while (retries < maxRetries) {
-      try {
-        await fs.rm(outputDir, { recursive: true, force: true });
-        logger.info(`Successfully cleaned up temporary files for videoId: ${videoId}`);
-        return;
-      } catch (error) {
-        retries++;
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        logger.warn(`Cleanup attempt ${retries} failed for videoId: ${videoId}. Error: ${errorMessage}`);
-
-        if (retries < maxRetries) {
-          // Wait for a short time before retrying
-          await new Promise(resolve => setTimeout(resolve, 1000));
-        }
-      }
+    try {
+      await fs.rm(outputDir, { recursive: true, force: true });
+      logger.info(`Successfully cleaned up temporary files for videoId: ${videoId}`);
+    } catch (error) {
+      logger.warn(`Failed to clean up temporary files for videoId: ${videoId}. Error: ${error}`);
     }
-
-    logger.error(`Failed to clean up temporary files after ${maxRetries} attempts for videoId: ${videoId}`);
   }
 
   async checkVideoProcessingStatus(videoId: string): Promise<{ statusCode: number; processed: boolean; message: string }> {
     logger.info(`Checking processing status for videoId: ${videoId}`);
-
-    const processingInfo = this.processingVideos.get(videoId);
-    if (processingInfo) {
-      if (processingInfo.status === ReelProcessingStatus.PROCESSING) {
-        const elapsedTime = (Date.now() - processingInfo.startTime) / 1000 / 60; // in minutes
-        if (elapsedTime > 20) { // 20 minutes timeout
-          // If processing time exceeds 20 minutes, consider it as an error
-          await this.deletePartiallyUploadedFiles(videoId);
-          await this.updateVideoProcessingStatus(videoId, ReelProcessingStatus.FAILED);
-          this.processingVideos.set(videoId, { ...processingInfo, status: ReelProcessingStatus.FAILED, error: "Processing timed out" });
-          return {
-            statusCode: 500,
-            processed: false,
-            message: "Video processing timed out and was terminated."
-          };
-        }
-        return {
-          statusCode: 202,
-          processed: false,
-          message: `Video is still processing. Elapsed time: ${elapsedTime.toFixed(2)} minutes.`
-        };
-      } else if (processingInfo.status === ReelProcessingStatus.FAILED) {
-        return {
-          statusCode: 500,
-          processed: false,
-          message: `Video processing failed. Error: ${processingInfo.error}`
-        };
-      }
-    }
 
     const listParams = {
       Bucket: config.CLOUDFLARE_R2_BUCKET_NAME,
@@ -267,9 +295,9 @@ class ReelService {
     const { Contents } = await this.s3Client.send(new ListObjectsCommand(listParams));
 
     const expectedFiles = [
-      `videos/${videoId}/1080p_stream.m3u8`,
-      `videos/${videoId}/720p_stream.m3u8`,
-      `videos/${videoId}/360p_stream.m3u8`,
+      `videos/${videoId}/1080p.m3u8`,
+      `videos/${videoId}/720p.m3u8`,
+      `videos/${videoId}/360p.m3u8`,
     ];
 
     const existingFiles = Contents?.map(item => item.Key) || [];
@@ -284,8 +312,6 @@ class ReelService {
 
     return { statusCode: 200, processed: true, message: "Video processing is complete." };
   }
-
-  checkIfVideoIsProcessed = this.checkVideoProcessingStatus;
 
   private async updateVideoProcessingStatus(videoId: string, status: ReelProcessingStatus) {
     logger.info(`Updating video processing status for videoId ${videoId}: ${status}`);
@@ -306,7 +332,6 @@ class ReelService {
 
     return logs;
   }
-
 }
 
 export default new ReelService(new ReelRepository());

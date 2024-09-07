@@ -5,6 +5,8 @@ import ReelService from "../../services/reel.service";
 import logger from "../../utils/logger";
 import cluster from "cluster";
 import os from "os";
+import fs from "fs-extra";
+
 
 const connection = new IORedis(config.REDIS_URL, {
   maxRetriesPerRequest: null,
@@ -28,6 +30,9 @@ const processJob = async (job: Job) => {
   const { filePath, videoId } = job.data;
 
   try {
+    if (!await fs.pathExists(filePath)) {
+      throw new Error(`File not found: ${filePath}`);
+    }
     await ReelService.processVideoInBackground(filePath, videoId);
     return { success: true, videoId };
   } catch (error) {
