@@ -82,17 +82,17 @@ class VideoProcessingService {
       throw error;
     } finally {
       // Clean up local files
-      try {
-        if (fs.existsSync(localFilePath)) {
-          await unlinkAsync(localFilePath);
-        }
-        if (fs.existsSync(transcodedDir)) {
-          await this.removeDirectory(transcodedDir);
-        }
-        logger.info(`Deleted local files for videoId: ${videoId}`);
-      } catch (error) {
-        logger.warn(`Failed to delete local files for videoId ${videoId}:`, error);
-      }
+      // try {
+      //   if (fs.existsSync(localFilePath)) {
+      //     await unlinkAsync(localFilePath);
+      //   }
+      //   if (fs.existsSync(transcodedDir)) {
+      //     await this.removeDirectory(transcodedDir);
+      //   }
+      //   logger.info(`Deleted local files for videoId: ${videoId}`);
+      // } catch (error) {
+      //   logger.warn(`Failed to delete local files for videoId ${videoId}:`, error);
+      // }
     }
   }
 
