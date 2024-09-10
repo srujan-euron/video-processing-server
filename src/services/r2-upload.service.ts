@@ -1,14 +1,14 @@
-import { S3Client, PutObjectCommand, DeleteObjectsCommand, ListObjectsCommand } from "@aws-sdk/client-s3";
-import fs from "fs-extra";
+import { S3Client, PutObjectCommand, ListObjectsCommand } from "@aws-sdk/client-s3";
+import fs from "fs";
 import path from "path";
-import config from "../config";
 import logger from "../utils/logger";
+import config from "../config";
 
-class S3UploadService {
-  private s3Client: S3Client;
+class CloudflareR2Service {
+  private r2Client: S3Client;
 
   constructor() {
-    this.s3Client = new S3Client({
+    this.r2Client = new S3Client({
       endpoint: config.CLOUDFLARE_R2_ENDPOINT,
       credentials: {
         accessKeyId: config.CLOUDFLARE_R2_ACCESS_KEY_ID,
@@ -18,22 +18,33 @@ class S3UploadService {
     });
   }
 
-  async uploadToR2(outputDir: string, videoId: string): Promise<void> {
-    const files = await fs.readdir(outputDir);
+  async uploadTranscodedVideos(videoId: string, transcodedDir: string): Promise<void> {
+    const files = await fs.promises.readdir(transcodedDir);
 
     for (const file of files) {
-      const filePath = path.join(outputDir, file);
-      const fileContent = await fs.readFile(filePath);
+      await this.uploadFile(videoId, transcodedDir, file);
+    }
+  }
 
-      const uploadParams = {
-        Bucket: config.CLOUDFLARE_R2_BUCKET_NAME,
-        Key: `videos/${videoId}/${file}`,
-        Body: fileContent,
-        ContentType: file.endsWith(".m3u8") ? "application/vnd.apple.mpegurl" : "video/MP2T",
-      };
+  private async uploadFile(videoId: string, dir: string, filename: string): Promise<void> {
+    const filePath = path.join(dir, filename);
+    const fileContent = await fs.promises.readFile(filePath);
 
-      logger.info(`Uploading file ${file} to R2 for videoId: ${videoId}`);
-      await this.s3Client.send(new PutObjectCommand(uploadParams));
+    const key = `videos/${videoId}/${filename}`;
+
+    const uploadParams = {
+      Bucket: config.CLOUDFLARE_R2_BUCKET_NAME,
+      Key: key,
+      Body: fileContent,
+      ContentType: filename.endsWith(".m3u8") ? "application/vnd.apple.mpegurl" : "video/MP2T",
+    };
+
+    try {
+      await this.r2Client.send(new PutObjectCommand(uploadParams));
+      logger.info(`Uploaded ${filename} to R2`);
+    } catch (error) {
+      logger.error(`Error uploading ${filename} to R2:`, error);
+      throw error;
     }
   }
 
@@ -42,49 +53,38 @@ class S3UploadService {
       Bucket: config.CLOUDFLARE_R2_BUCKET_NAME,
       Prefix: `videos/${videoId}/`,
     };
-    const { Contents } = await this.s3Client.send(new ListObjectsCommand(listParams));
-
-    const expectedFiles = [
-      `videos/${videoId}/1080p.m3u8`,
-      `videos/${videoId}/720p.m3u8`,
-      `videos/${videoId}/360p.m3u8`,
-    ];
-
-    const existingFiles = Contents?.map(item => item.Key) || [];
-
-    return expectedFiles.every(file => existingFiles.includes(file));
-  }
-
-  async deletePartiallyUploadedFiles(videoId: string): Promise<void> {
-    logger.info(`Deleting partially uploaded files for videoId: ${videoId}`);
-
-    const listParams = {
-      Bucket: config.CLOUDFLARE_R2_BUCKET_NAME,
-      Prefix: `videos/${videoId}/`,
-    };
 
     try {
-      const { Contents } = await this.s3Client.send(new ListObjectsCommand(listParams));
+      const { Contents } = await this.r2Client.send(new ListObjectsCommand(listParams));
 
-      if (Contents && Contents.length > 0) {
-        const deleteParams = {
-          Bucket: config.CLOUDFLARE_R2_BUCKET_NAME,
-          Delete: {
-            Objects: Contents.map(({ Key }) => ({ Key: Key! })),
-            Quiet: false,
-          },
-        };
-
-        await this.s3Client.send(new DeleteObjectsCommand(deleteParams));
-        logger.info(`Successfully deleted partially uploaded files for videoId: ${videoId}`);
-      } else {
-        logger.info(`No files found to delete for videoId: ${videoId}`);
+      if (!Contents) {
+        logger.warn(`No files found for videoId: ${videoId}`);
+        return false;
       }
+
+      const requiredFiles = [
+        "master.m3u8",
+        "1080p.m3u8",
+        "720p.m3u8",
+        "360p.m3u8",
+      ];
+
+      const uploadedFiles = Contents.map(item => item.Key?.split("/").pop());
+
+      const allFilesUploaded = requiredFiles.every(file => uploadedFiles.includes(file));
+
+      if (allFilesUploaded) {
+        logger.info(`All required files have been uploaded for videoId: ${videoId}`);
+      } else {
+        logger.warn(`Some required files are missing for videoId: ${videoId}`);
+      }
+
+      return allFilesUploaded;
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      logger.error(`Error deleting partially uploaded files for videoId ${videoId}:`, errorMessage);
+      logger.error(`Error checking processed files for videoId: ${videoId}`, error);
+      throw error;
     }
   }
 }
 
-export default S3UploadService;
+export default CloudflareR2Service;

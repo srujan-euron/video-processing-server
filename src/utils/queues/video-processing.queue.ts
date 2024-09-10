@@ -2,11 +2,9 @@ import { Queue, Worker, Job } from "bullmq";
 import IORedis from "ioredis";
 import config from "../../config";
 import ReelService from "../../services/reel.service";
-import logger from "../../utils/logger";
+import logger from "../logger";
 import cluster from "cluster";
 import os from "os";
-import fs from "fs-extra";
-
 
 const connection = new IORedis(config.REDIS_URL, {
   maxRetriesPerRequest: null,
@@ -27,13 +25,14 @@ export const videoProcessingQueue = new Queue("videoProcessing", {
 });
 
 const processJob = async (job: Job) => {
-  const { filePath, videoId } = job.data;
+  const { videoId, s3Key } = job.data;
+
+  if (!videoId || !s3Key) {
+    throw new Error(`Invalid job data. videoId: ${videoId}, s3Key: ${s3Key}`);
+  }
 
   try {
-    if (!await fs.pathExists(filePath)) {
-      throw new Error(`File not found: ${filePath}`);
-    }
-    await ReelService.processVideoInBackground(filePath, videoId);
+    await ReelService.processVideoInBackground(videoId, s3Key);
     return { success: true, videoId };
   } catch (error) {
     logger.error(`Error processing video ${videoId}:`, error);

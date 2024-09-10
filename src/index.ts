@@ -5,7 +5,7 @@ import app from "./app";
 import config from "./config";
 import { waitForDBConnection } from "./db/connection";
 import logger from "./utils/logger";
-import { initializeVideoProcessingWorker } from "./utils/queues/videoProcessing";
+import { initializeVideoProcessingWorker } from "./utils/queues/video-processing.queue";
 
 
 (async () => {
