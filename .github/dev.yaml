@@ -2,9 +2,9 @@ name: Node.js CI/CD Pipeline
 
 on:
   push:
-    branches: [ development ]
+    branches: [ main, development ]
   pull_request:
-    branches: [ development ]
+    branches: [ main, development ]
 
 jobs:
   build-and-test:
@@ -45,7 +45,7 @@ jobs:
   deploy:
     needs: build-and-test
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/development')
 
     steps:
     - uses: actions/checkout@v2
@@ -64,35 +64,66 @@ jobs:
 
     - name: Deploy to Ubuntu server
       uses: appleboy/ssh-action@master
+      env:
+        BRANCH: ${{ github.ref }}
       with:
         host: ${{ secrets.HOST }}
         username: ${{ secrets.USERNAME }}
         key: ${{ secrets.SSH_PRIVATE_KEY }}
+        envs: BRANCH
         script: |
+          if [ "$BRANCH" = "refs/heads/main" ]; then
+            APP_PATH="/var/www/video-processing-server"
+            SERVICE_NAME="video-processing-server"
+            AWS_SECRET_NAME="${{ secrets.MAIN_AWS_SECRET_NAME }}"
+          elif [ "$BRANCH" = "refs/heads/development" ]; then
+            APP_PATH="/var/www/video-processing-server-dev/video-processing-server"
+            SERVICE_NAME="video-processing-server-dev"
+            AWS_SECRET_NAME="${{ secrets.DEV_AWS_SECRET_NAME }}"
+          else
+            echo "Unsupported branch for deployment"
+            exit 1
+          fi
+
           # Navigate to the application directory
-          cd /path/to/your/app
+          cd $APP_PATH
 
           # Pull the latest code
-          git pull origin main
+          git pull origin ${BRANCH#refs/heads/}
 
           # Install dependencies
-          npm ci --production
+          npm ci
 
           # Fetch .env from AWS Secrets Manager
-          aws secretsmanager get-secret-value --secret-id ${{ secrets.AWS_SECRET_NAME }} --region ${{ secrets.AWS_REGION }} --query SecretString --output text > .env
+          aws secretsmanager get-secret-value --secret-id $AWS_SECRET_NAME --region ${{ secrets.AWS_REGION }} --query SecretString --output text > .env
+
+          # Build the project
+          npm run build
 
           # Restart the systemd service
-          sudo systemctl restart your-app.service
+          sudo systemctl restart $SERVICE_NAME.service
 
           # Check the status of the service
-          sudo systemctl status your-app.service
+          sudo systemctl status $SERVICE_NAME.service
 
     - name: Verify Deployment
       uses: appleboy/ssh-action@master
+      env:
+        BRANCH: ${{ github.ref }}
       with:
         host: ${{ secrets.HOST }}
         username: ${{ secrets.USERNAME }}
         key: ${{ secrets.SSH_PRIVATE_KEY }}
+        envs: BRANCH
         script: |
+          if [ "$BRANCH" = "refs/heads/main" ]; then
+            APP_PORT="${{ secrets.MAIN_APP_PORT }}"
+          elif [ "$BRANCH" = "refs/heads/development" ]; then
+            APP_PORT="${{ secrets.DEV_APP_PORT }}"
+          else
+            echo "Unsupported branch for verification"
+            exit 1
+          fi
+
           # Add any post-deployment checks here
-          curl http://localhost:your_port/health || exit 1
+          curl http://localhost:$APP_PORT/health || exit 1
