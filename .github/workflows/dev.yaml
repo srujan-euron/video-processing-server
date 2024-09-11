@@ -118,7 +118,7 @@ jobs:
           sudo systemctl status $SERVICE_NAME.service
 
           # Verify the service health
-          curl http://localhost:$APP_PORT/health || exit 1
+          curl http://localhost:$APP_PORT/api/v1/health || exit 1
           
           # Unset AWS credentials
           unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
