@@ -15,17 +15,6 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: '20'
-    - name: Cache node modules
-      uses: actions/cache@v2
-      env:
-        cache-name: cache-node-modules
-      with:
-        path: ~/.npm
-        key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('**/package-lock.json') }}
-        restore-keys: |
-          ${{ runner.os }}-build-${{ env.cache-name }}-
-          ${{ runner.os }}-build-
-          ${{ runner.os }}-
     - name: Install dependencies
       run: npm ci
     - name: Build application
@@ -60,96 +49,27 @@ jobs:
           APP_PATH="/var/www/video-processing-server"
           SERVICE_NAME="video-processing-server"
           AWS_SECRET_NAME="${{ secrets.MAIN_AWS_SECRET_NAME }}"
-          APP_PORT="${{ secrets.MAIN_APP_PORT }}"
         elif [ "$BRANCH" = "refs/heads/development" ]; then
           APP_PATH="/var/www/video-processing-server-dev/video-processing-server"
           SERVICE_NAME="video-processing-server-dev"
           AWS_SECRET_NAME="${{ secrets.DEV_AWS_SECRET_NAME }}"
-          APP_PORT="${{ secrets.DEV_APP_PORT }}"
         else
-          echo "Unsupported branch for deployment"
           exit 1
         fi
 
-        echo "Deploying to $APP_PATH"
-        echo "Using AWS Secret Name: $AWS_SECRET_NAME"
-
-        # Use sshpass for password-based authentication
         sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no ${{ secrets.USERNAME }}@${{ secrets.HOST }} << EOF
-          set -x  # Enable verbose mode
           cd $APP_PATH
-          
-          # Add the directory to git safe.directory
           sudo git config --system --add safe.directory $APP_PATH
-          
-          # Forcefully reset local changes and pull latest code
           git fetch origin
           git reset --hard origin/${BRANCH#refs/heads/}
           git clean -fd
-          
-          # Print current commit hash for verification
-          echo "Current commit hash:"
-          git rev-parse HEAD
-
-          # Install dependencies
           npm install
-
-          echo "Attempting to fetch secrets from AWS Secrets Manager..."
-          
-          # Set AWS credentials as environment variables
           export AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID"
           export AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY"
           export AWS_DEFAULT_REGION="$AWS_DEFAULT_REGION"
-
-          # Attempt to fetch secrets
-          if SECRET_VALUE=\$(aws secretsmanager get-secret-value --secret-id $AWS_SECRET_NAME --query SecretString --output text); then
-            echo "Secrets fetched successfully"
-            # Write secret to .env file, ensuring proper formatting
-            echo "\$SECRET_VALUE" > .env
-            echo ".env file created"
-            
-            # Ensure .env has the correct permissions
-            chmod 600 .env
-            echo "Permissions set for .env file"
-
-            # Display the first line of .env file (be careful not to expose sensitive data)
-            echo "First line of .env file:"
-            head -n 1 .env | cut -d'=' -f1
-          else
-            echo "Failed to fetch secrets from AWS Secrets Manager"
-            aws sts get-caller-identity
-            exit 1
-          fi
-
-          # Build the project
+          aws secretsmanager get-secret-value --secret-id $AWS_SECRET_NAME --query SecretString --output text > .env
+          chmod 600 .env
           npm run build
-
-          # Restart the systemd service
-          sudo systemctl stop $SERVICE_NAME.service
-          sudo systemctl start $SERVICE_NAME.service
-
-          # Check the status of the service
-          sudo systemctl status $SERVICE_NAME.service
-
-          # Check application logs
-          echo "Checking application logs..."
-          sudo journalctl -u $SERVICE_NAME.service -n 50 --no-pager
-
-          # Add a delay before health check
-          echo "Waiting for application to start..."
-          sleep 10
-
-          # Verify the service health
-          echo "Performing health check..."
-          curl -v http://localhost:$APP_PORT/api/v1/health || {
-            echo "Health check failed. Checking if port is in use..."
-            sudo netstat -tulpn | grep :$APP_PORT
-            echo "Checking firewall status..."
-            sudo ufw status
-          }
-          
-          # Unset AWS credentials
+          sudo systemctl restart $SERVICE_NAME.service
           unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
-          
-          set +x  # Disable verbose mode
         EOF
