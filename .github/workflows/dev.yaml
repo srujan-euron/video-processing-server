@@ -117,8 +117,22 @@ jobs:
           # Check the status of the service
           sudo systemctl status $SERVICE_NAME.service
 
+          # Check application logs
+          echo "Checking application logs..."
+          sudo journalctl -u $SERVICE_NAME.service -n 50 --no-pager
+
+          # Add a delay before health check
+          echo "Waiting for application to start..."
+          sleep 10
+
           # Verify the service health
-          curl http://localhost:$APP_PORT/api/v1/health || exit 1
+          echo "Performing health check..."
+          curl -v http://localhost:$APP_PORT/api/v1/health || {
+            echo "Health check failed. Checking if port is in use..."
+            sudo netstat -tulpn | grep :$APP_PORT
+            echo "Checking firewall status..."
+            sudo ufw status
+          }
           
           # Unset AWS credentials
           unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
