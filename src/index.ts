@@ -5,6 +5,7 @@ import app from "./app";
 import config from "./config";
 import { waitForDBConnection } from "./db/connection";
 import logger from "./utils/logger";
+import { initializeJobManagement } from "./utils/jobManagement";
 import { initializeVideoProcessingWorker } from "./utils/queues/video-processing.queue";
 
 
@@ -44,8 +45,9 @@ import { initializeVideoProcessingWorker } from "./utils/queues/video-processing
 
       return false;
     };
-    const videoProcessingWorker = initializeVideoProcessingWorker();
 
+    initializeVideoProcessingWorker();
+    initializeJobManagement();
 
     const port = normalizePort(config.PORT || "4010");
 

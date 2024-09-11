@@ -4,7 +4,8 @@ import config from "../../config";
 import ReelService from "../../services/reel.service";
 import logger from "../logger";
 import cluster from "cluster";
-import os from "os";
+import { markJobAsCompleted, markJobAsFailed } from "../jobManagement";
+
 
 const connection = new IORedis(config.REDIS_URL, {
   maxRetriesPerRequest: null,
@@ -41,15 +42,11 @@ const processJob = async (job: Job) => {
 };
 
 export const initializeVideoProcessingWorker = () => {
-  const numCPUs = os.cpus().length;
-
   if (cluster.isPrimary) {
     logger.info(`Master ${process.pid} is running`);
 
-    // Fork workers
-    for (let i = 0; i < numCPUs; i++) {
-      cluster.fork();
-    }
+    // Fork only one worker
+    cluster.fork();
 
     cluster.on("exit", (worker, code, signal) => {
       logger.info(`Worker ${worker.process.pid} died`);
@@ -57,22 +54,19 @@ export const initializeVideoProcessingWorker = () => {
       cluster.fork();
     });
   } else {
-    // Workers can share any TCP connection
     const worker = new Worker("videoProcessing", processJob, {
       connection,
-      concurrency: 2, // Process up to 2 jobs per worker
-      limiter: {
-        max: 2,
-        duration: 1000
-      }
+      concurrency: 1, // Process only one job at a time
     });
 
-    worker.on("completed", (job) => {
+    worker.on("completed", async (job) => {
       logger.info(`Worker ${process.pid}: Job ${job.id} has completed for video ${job.data.videoId}`);
+      await markJobAsCompleted(job.data.videoId);
     });
 
-    worker.on("failed", (job, err) => {
+    worker.on("failed", async (job, err) => {
       logger.error(`Worker ${process.pid}: Job ${job?.id} has failed for video ${job?.data.videoId}:`, err);
+      await markJobAsFailed(job?.data.videoId);
     });
 
     logger.info(`Worker ${process.pid} started`);
