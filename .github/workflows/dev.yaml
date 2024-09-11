@@ -78,7 +78,18 @@ jobs:
         sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no ${{ secrets.USERNAME }}@${{ secrets.HOST }} << EOF
           set -x  # Enable verbose mode
           cd $APP_PATH
-          git pull origin ${BRANCH#refs/heads/}
+          
+          # Forcefully reset local changes and pull latest code
+          git fetch origin
+          git reset --hard origin/${BRANCH#refs/heads/}
+          git clean -fd
+          
+          # Print current commit hash for verification
+          echo "Current commit hash:"
+          git rev-parse HEAD
+
+          # Remove node_modules and package-lock.json for a clean install
+          rm -rf node_modules package-lock.json
           npm ci
 
           echo "Attempting to fetch secrets from AWS Secrets Manager..."
@@ -112,7 +123,8 @@ jobs:
           npm run build
 
           # Restart the systemd service
-          sudo systemctl restart $SERVICE_NAME.service
+          sudo systemctl stop $SERVICE_NAME.service
+          sudo systemctl start $SERVICE_NAME.service
 
           # Check the status of the service
           sudo systemctl status $SERVICE_NAME.service
