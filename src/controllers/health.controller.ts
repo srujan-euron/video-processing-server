@@ -17,7 +17,7 @@ export const helloWorld = (req: Request, res: Response, next: NextFunction) => {
     all = { ...all, totalmem: os.totalmem() / 1000000000, freemem: os.freemem() / 1000000000 };
   }
   next({
-    message: "Hello from euron-admin-server",
+    message: "Hello from Video Processing Server",
     env: config.NODE_ENV,
     instance: instanceRandomID,
     version: pjson.version,
