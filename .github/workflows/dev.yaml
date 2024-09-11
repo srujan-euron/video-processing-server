@@ -49,35 +49,52 @@ jobs:
         aws-region: ${{ secrets.AWS_REGION }}
     - name: Deploy to Ubuntu server
       env:
-        BRANCH: ${{ github.ref }}
-        SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+          BRANCH: ${{ github.ref }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
       run: |
-        if [ "$BRANCH" = "refs/heads/main" ]; then
-          APP_PATH="/var/www/video-processing-server"
-          SERVICE_NAME="video-processing-server"
-          AWS_SECRET_NAME="${{ secrets.MAIN_AWS_SECRET_NAME }}"
-          APP_PORT="${{ secrets.MAIN_APP_PORT }}"
-        elif [ "$BRANCH" = "refs/heads/development" ]; then
-          APP_PATH="/var/www/video-processing-server-dev/video-processing-server"
-          SERVICE_NAME="video-processing-server-dev"
-          AWS_SECRET_NAME="${{ secrets.DEV_AWS_SECRET_NAME }}"
-          APP_PORT="${{ secrets.DEV_APP_PORT }}"
-        else
-          echo "Unsupported branch for deployment"
-          exit 1
-        fi
-
-        # Use sshpass for password-based authentication
-        sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no ${{ secrets.USERNAME }}@${{ secrets.HOST }} << EOF
-          cd $APP_PATH
-          git pull origin ${BRANCH#refs/heads/}
-          npm ci
-          aws secretsmanager get-secret-value --secret-id $AWS_SECRET_NAME --region ${{ secrets.AWS_REGION }} --query SecretString --output text > .env
-          npm run build
-          sudo systemctl restart $SERVICE_NAME.service
-          sudo systemctl status $SERVICE_NAME.service
-          curl http://localhost:$APP_PORT/health || exit 1
-        EOF
+          if [ "$BRANCH" = "refs/heads/main" ]; then
+            APP_PATH="/var/www/video-processing-server"
+            SERVICE_NAME="video-processing-server"
+            AWS_SECRET_NAME="${{ secrets.MAIN_AWS_SECRET_NAME }}"
+            APP_PORT="${{ secrets.MAIN_APP_PORT }}"
+          elif [ "$BRANCH" = "refs/heads/development" ]; then
+            APP_PATH="/var/www/video-processing-server-dev/video-processing-server"
+            SERVICE_NAME="video-processing-server-dev"
+            AWS_SECRET_NAME="${{ secrets.DEV_AWS_SECRET_NAME }}"
+            APP_PORT="${{ secrets.DEV_APP_PORT }}"
+          else
+            echo "Unsupported branch for deployment"
+            exit 1
+          fi
+      
+          # Use sshpass for password-based authentication
+          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no ${{ secrets.USERNAME }}@${{ secrets.HOST }} << EOF
+            cd $APP_PATH
+            git pull origin ${BRANCH#refs/heads/}
+            npm ci
+      
+            # Fetch .env from AWS Secrets Manager
+            SECRET_VALUE=\$(aws secretsmanager get-secret-value --secret-id $AWS_SECRET_NAME --region ${{ secrets.AWS_REGION }} --query SecretString --output text)
+      
+            # Write secret to .env file, ensuring proper formatting
+            echo "\$SECRET_VALUE" > .env
+      
+            # Ensure .env has the correct permissions
+            chmod 600 .env
+      
+            # Build the project
+            npm run build
+      
+            # Restart the systemd service
+            sudo systemctl restart $SERVICE_NAME.service
+      
+            # Check the status of the service
+            sudo systemctl status $SERVICE_NAME.service
+      
+            # Verify the service health
+            curl http://localhost:$APP_PORT/health || exit 1
+          EOF
+      
 
     - name: Install sshpass
       run: sudo apt-get install sshpass
