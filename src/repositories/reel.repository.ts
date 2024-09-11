@@ -1,5 +1,6 @@
 import { db } from "../db/connection";
 import { ReelProcessingStatus } from "../db/enums";
+import logger from "../utils/logger";
 
 export class ReelRepository {
   private _db = db;
@@ -16,6 +17,7 @@ export class ReelRepository {
     videoId: string,
     processingStatus: ReelProcessingStatus
   ): Promise<void> {
+    logger.info(`Updating processing status for videoId ${videoId} to ${processingStatus}`);
     const result = await this._db
       .updateTable("Reel")
       .set({

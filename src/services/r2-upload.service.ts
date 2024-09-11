@@ -18,11 +18,33 @@ class CloudflareR2Service {
     });
   }
 
-  async uploadTranscodedVideos(videoId: string, transcodedDir: string): Promise<void> {
-    const files = await fs.promises.readdir(transcodedDir);
+  // In CloudflareR2Service.ts
+  async verifyConnection(): Promise<boolean> {
+    try {
+      await this.r2Client.send(new ListObjectsCommand({ Bucket: config.CLOUDFLARE_R2_BUCKET_NAME, MaxKeys: 1 }));
+      logger.info("Successfully connected to Cloudflare R2");
+      return true;
+    } catch (error) {
+      logger.error("Failed to connect to Cloudflare R2:", error);
+      return false;
+    }
+  }
 
-    for (const file of files) {
-      await this.uploadFile(videoId, transcodedDir, file);
+  async uploadTranscodedVideos(videoId: string, transcodedDir: string, retries = 3): Promise<void> {
+    try {
+      const files = await fs.promises.readdir(transcodedDir);
+
+      for (const file of files) {
+        await this.uploadFile(videoId, transcodedDir, file);
+      }
+    } catch (error) {
+      if (retries > 0) {
+        logger.warn(`R2 upload failed for videoId ${videoId}. Retrying... (${retries} attempts left)`);
+        await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds before retrying
+        return this.uploadTranscodedVideos(videoId, transcodedDir, retries - 1);
+      }
+      logger.error(`R2 upload failed for videoId ${videoId} after all retry attempts`);
+      throw error;
     }
   }
 

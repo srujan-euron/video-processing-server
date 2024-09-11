@@ -38,10 +38,15 @@ class VideoProcessingService {
     const transcodedDir = path.join(this.localStoragePath, videoId);
 
     try {
+      await this.reelRepository.updateVideoProcessingStatus(videoId, ReelProcessingStatus.PROCESSING);
+
       logger.info(`Starting video processing for videoId: ${videoId}`);
 
       // Download video from S3
+      logger.info(`Downloading video from S3 for videoId: ${videoId}`);
       const videoBuffer = await this.s3Service.getFileBuffer(s3Key);
+      logger.info(`Downloaded video from S3 for videoId: ${videoId}`);
+
       await writeFileAsync(localFilePath, videoBuffer);
       logger.info(`Video downloaded to ${localFilePath}`);
 
@@ -60,6 +65,8 @@ class VideoProcessingService {
       logger.info(`Files in transcoded directory for videoId ${videoId}:`, files);
 
       // Upload transcoded files to R2
+      logger.info(`Transcoding completed for videoId: ${videoId}`);
+      logger.info(`Starting R2 upload for videoId: ${videoId}`);
       await this.cloudflareR2Service.uploadTranscodedVideos(videoId, transcodedDir);
       logger.info(`R2 upload completed for videoId: ${videoId}`);
 

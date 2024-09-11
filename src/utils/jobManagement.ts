@@ -44,10 +44,11 @@ export async function detectStuckJobs() {
     .selectFrom("Reel")
     .select(["id", "videoId"])
     .where("processingStatus", "=", ReelProcessingStatus.PROCESSING)
-    .where("updatedAt", "<", new Date(Date.now() - 2 * 60 * 60 * 1000)) // Stuck for more than 2 hours
+    .where("updatedAt", "<", new Date(Date.now() - 30 * 60 * 1000)) // Stuck for more than 30 minutes
     .execute();
 
   for (const job of stuckJobs) {
+    logger.warn(`Found stuck job for videoId ${job.videoId}`);
     await markJobAsFailed(job.videoId);
     await videoProcessingQueue.add("processVideo", { videoId: job.videoId }, {
       jobId: job.videoId,
@@ -66,5 +67,5 @@ export function initializeJobManagement() {
   setInterval(recoverFailedJobs, 60 * 60 * 1000);
 
   // Run stuck job detection every 30 minutes
-  setInterval(detectStuckJobs, 30 * 60 * 1000);
+  setInterval(detectStuckJobs, 15 * 60 * 1000);
 }
