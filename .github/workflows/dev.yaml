@@ -73,20 +73,44 @@ jobs:
           exit 1
         fi
 
-        # Fetch secrets from AWS Secrets Manager
-        SECRET_VALUE=$(aws secretsmanager get-secret-value --secret-id $AWS_SECRET_NAME --query SecretString --output text)
+        echo "Deploying to $APP_PATH"
+        echo "Using AWS Secret Name: $AWS_SECRET_NAME"
 
         # Use sshpass for password-based authentication
-        sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no ${{ secrets.USERNAME }}@${{ secrets.HOST }} << 'ENDSSH'
+        sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no ${{ secrets.USERNAME }}@${{ secrets.HOST }} << EOF
+          set -x  # Enable verbose mode
           cd $APP_PATH
           git pull origin ${BRANCH#refs/heads/}
           npm ci
 
-          # Write secret to .env file, ensuring proper formatting
-          echo "$SECRET_VALUE" > .env
+          echo "Attempting to fetch secrets from AWS Secrets Manager..."
+          # Check if AWS CLI is installed
+          if ! command -v aws &> /dev/null; then
+            echo "AWS CLI is not installed. Installing now..."
+            sudo apt-get update && sudo apt-get install -y awscli
+          fi
 
-          # Ensure .env has the correct permissions
-          chmod 600 .env
+          # Check AWS CLI version
+          aws --version
+
+          # Attempt to fetch secrets
+          if SECRET_VALUE=\$(aws secretsmanager get-secret-value --secret-id $AWS_SECRET_NAME --region ${{ secrets.AWS_REGION }} --query SecretString --output text); then
+            echo "Secrets fetched successfully"
+            # Write secret to .env file, ensuring proper formatting
+            echo "\$SECRET_VALUE" > .env
+            echo ".env file created"
+            
+            # Ensure .env has the correct permissions
+            chmod 600 .env
+            echo "Permissions set for .env file"
+
+            # Display the first line of .env file (be careful not to expose sensitive data)
+            echo "First line of .env file:"
+            head -n 1 .env | cut -d'=' -f1
+          else
+            echo "Failed to fetch secrets from AWS Secrets Manager"
+            exit 1
+          fi
 
           # Build the project
           npm run build
@@ -99,4 +123,6 @@ jobs:
 
           # Verify the service health
           curl http://localhost:$APP_PORT/health || exit 1
-        ENDSSH
+          
+          set +x  # Disable verbose mode
+        EOF
