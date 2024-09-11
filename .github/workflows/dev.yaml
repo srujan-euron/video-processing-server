@@ -1,4 +1,4 @@
-name: Node.js CI/CD Pipeline
+name: CI/CD Pipeline
 
 on:
   push:
@@ -10,9 +10,9 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     - name: Use Node.js
-      uses: actions/setup-node@v2
+      uses: actions/setup-node@v4
       with:
         node-version: '20'
     - name: Cache node modules
@@ -36,65 +36,67 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && (github.ref_name == 'main' || github.ref_name == 'development')
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
+    
     - name: Install AWS CLI
       run: |
         sudo apt-get update
         sudo apt-get install -y awscli
+    
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v1
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ secrets.AWS_REGION }}
-    - name: Deploy to Ubuntu server
-      env:
-          BRANCH: ${{ github.ref }}
-          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
-      run: |
-          if [ "$BRANCH" = "refs/heads/main" ]; then
-            APP_PATH="/var/www/video-processing-server"
-            SERVICE_NAME="video-processing-server"
-            AWS_SECRET_NAME="${{ secrets.MAIN_AWS_SECRET_NAME }}"
-            APP_PORT="${{ secrets.MAIN_APP_PORT }}"
-          elif [ "$BRANCH" = "refs/heads/development" ]; then
-            APP_PATH="/var/www/video-processing-server-dev/video-processing-server"
-            SERVICE_NAME="video-processing-server-dev"
-            AWS_SECRET_NAME="${{ secrets.DEV_AWS_SECRET_NAME }}"
-            APP_PORT="${{ secrets.DEV_APP_PORT }}"
-          else
-            echo "Unsupported branch for deployment"
-            exit 1
-          fi
-      
-          # Use sshpass for password-based authentication
-          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no ${{ secrets.USERNAME }}@${{ secrets.HOST }} << EOF
-            cd $APP_PATH
-            git pull origin ${BRANCH#refs/heads/}
-            npm ci
-      
-            # Fetch .env from AWS Secrets Manager
-            SECRET_VALUE=\$(aws secretsmanager get-secret-value --secret-id $AWS_SECRET_NAME --region ${{ secrets.AWS_REGION }} --query SecretString --output text)
-      
-            # Write secret to .env file, ensuring proper formatting
-            echo "\$SECRET_VALUE" > .env
-      
-            # Ensure .env has the correct permissions
-            chmod 600 .env
-      
-            # Build the project
-            npm run build
-      
-            # Restart the systemd service
-            sudo systemctl restart $SERVICE_NAME.service
-      
-            # Check the status of the service
-            sudo systemctl status $SERVICE_NAME.service
-      
-            # Verify the service health
-            curl http://localhost:$APP_PORT/health || exit 1
-          EOF
-      
-
+    
     - name: Install sshpass
       run: sudo apt-get install sshpass
+    
+    - name: Deploy to Ubuntu server
+      env:
+        BRANCH: ${{ github.ref }}
+        SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+      run: |
+        if [ "$BRANCH" = "refs/heads/main" ]; then
+          APP_PATH="/var/www/video-processing-server"
+          SERVICE_NAME="video-processing-server"
+          AWS_SECRET_NAME="${{ secrets.MAIN_AWS_SECRET_NAME }}"
+          APP_PORT="${{ secrets.MAIN_APP_PORT }}"
+        elif [ "$BRANCH" = "refs/heads/development" ]; then
+          APP_PATH="/var/www/video-processing-server-dev/video-processing-server"
+          SERVICE_NAME="video-processing-server-dev"
+          AWS_SECRET_NAME="${{ secrets.DEV_AWS_SECRET_NAME }}"
+          APP_PORT="${{ secrets.DEV_APP_PORT }}"
+        else
+          echo "Unsupported branch for deployment"
+          exit 1
+        fi
+
+        # Fetch secrets from AWS Secrets Manager
+        SECRET_VALUE=$(aws secretsmanager get-secret-value --secret-id $AWS_SECRET_NAME --query SecretString --output text)
+
+        # Use sshpass for password-based authentication
+        sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no ${{ secrets.USERNAME }}@${{ secrets.HOST }} << 'ENDSSH'
+          cd $APP_PATH
+          git pull origin ${BRANCH#refs/heads/}
+          npm ci
+
+          # Write secret to .env file, ensuring proper formatting
+          echo "$SECRET_VALUE" > .env
+
+          # Ensure .env has the correct permissions
+          chmod 600 .env
+
+          # Build the project
+          npm run build
+
+          # Restart the systemd service
+          sudo systemctl restart $SERVICE_NAME.service
+
+          # Check the status of the service
+          sudo systemctl status $SERVICE_NAME.service
+
+          # Verify the service health
+          curl http://localhost:$APP_PORT/health || exit 1
+        ENDSSH
