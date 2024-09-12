@@ -41,12 +41,14 @@ const processJob = async (job: Job) => {
   }
 };
 
-export const initializeVideoProcessingWorker = () => {
+export const initializeVideoProcessingWorker = (numWorkers = 4) => {
   if (cluster.isPrimary) {
     logger.info(`Master ${process.pid} is running`);
 
-    // Fork only one worker
-    cluster.fork();
+    // Fork multiple workers
+    for (let i = 0; i < numWorkers; i++) {
+      cluster.fork();
+    }
 
     cluster.on("exit", (worker, code, signal) => {
       logger.info(`Worker ${worker.process.pid} died`);
@@ -56,7 +58,7 @@ export const initializeVideoProcessingWorker = () => {
   } else {
     const worker = new Worker("videoProcessing", processJob, {
       connection,
-      concurrency: 1, // Process only one job at a time
+      concurrency: 4,
     });
 
     worker.on("completed", async (job) => {
